@@ -4,7 +4,7 @@ import { Environment, Html, Loader, useTexture, Sparkles } from '@react-three/dr
 import { EffectComposer, Bloom, Vignette } from '@react-three/postprocessing';
 import * as THREE from 'three';
 import { damp3, damp } from 'maath/easing';
-import * as random from 'maath/random';
+// 修复1: 移除了未使用的 'random' 引用
 import { FilesetResolver, HandLandmarker } from "@mediapipe/tasks-vision";
 
 // --- 0. 配置 ---
@@ -12,16 +12,16 @@ const CONFIG = {
   colors: {
     green: "#00A844", darkGreen: "#003311", gold: "#FFD700", red: "#EA2E49", white: "#F0F0F0", sockRed: "#D42426"
   },
-  counts: { foliage: 5000, ornaments: 150, gifts: 50, socks: 50, polaroids: 12 },
-  tree: { height: 12, radius: 5.2 },
-  // 摄像机：激活时拉近到 Z=20，看清展示墙
-  camera: { idle: [0, 2, 28], active: [0, 0, 20] }
+  counts: { foliage: 5000, ornaments: 150, gifts: 60, socks: 50, polaroids: 15 }, 
+  tree: { height: 12, radius: 5.5 },
+  camDist: { idle: 30, active: 24 }
 };
 
 // --- 1. 几何算法 ---
 
-const getFoliagePos = (i: number, count: number) => {
-  const pct = i / count; const y = (0.5 - pct) * CONFIG.tree.height; 
+const getTreePos = (i: number, count: number) => {
+  const pct = i / count; 
+  const y = (0.5 - pct) * CONFIG.tree.height; 
   let rBase = Math.pow(pct, 1.2) * CONFIG.tree.radius;
   rBase += Math.sin(pct * 12 * Math.PI) * 0.4 * pct; 
   const angle = i * 2.4; 
@@ -30,32 +30,35 @@ const getFoliagePos = (i: number, count: number) => {
   return new THREE.Vector3(Math.cos(angle) * finalRadius, y, Math.sin(angle) * finalRadius);
 };
 
-// 树表面分布
-const getSurfacePos = (i: number, count: number, offsetScale = 1.0) => {
+const getSurfacePos = (i: number, count: number, offset = 0.0) => {
     const pct = i / count;
-    const adjustedPct = pct * 0.8 + 0.1; 
+    const adjustedPct = Math.pow(pct, 0.9) * 0.9 + 0.05; 
     const y = (0.5 - adjustedPct) * CONFIG.tree.height;
+    
     let rBase = Math.pow(adjustedPct, 1.2) * CONFIG.tree.radius;
     rBase += Math.sin(adjustedPct * 12 * Math.PI) * 0.4 * adjustedPct;
-    const angle = i * 2.4; 
-    const surfaceOffset = 0.3 * offsetScale; 
-    const finalRadius = Math.max(0, rBase + surfaceOffset);
+    
+    const angle = i * 137.5; 
+    const finalRadius = Math.max(0, rBase + 0.2 + offset); 
+
     return new THREE.Vector3(Math.cos(angle) * finalRadius, y, Math.sin(angle) * finalRadius);
 }
 
-// 关键修改：紧凑展示墙 (Gallery Wall)
-// 范围限制在摄像机正前方，非常紧凑
-const getGalleryPos = () => {
-  // X: 左右跨度 10
-  const x = (Math.random() - 0.5) * 10.0; 
-  // Y: 上下跨度 7
-  const y = (Math.random() - 0.5) * 7.0;  
-  // Z: 深度 15~18 (摄像机在20)，就在眼前
-  const z = 15 + Math.random() * 3.0; 
-  return new THREE.Vector3(x, y, z);
+const getRingPos = () => {
+  const v = new THREE.Vector3();
+  const u = Math.random();
+  const v_rand = Math.random();
+  const theta = 2 * Math.PI * u;
+  const phi = Math.acos(2 * v_rand - 1);
+  const r = 10 + Math.random() * 4; 
+  
+  v.x = r * Math.sin(phi) * Math.cos(theta);
+  v.y = r * Math.sin(phi) * Math.sin(theta) * 0.8; 
+  v.z = r * Math.cos(phi);
+  return v;
 };
 
-// --- 2. AI 控制器 ---
+// --- 2. AI Controller ---
 const AIController = ({ onUpdate, debugMode }: { onUpdate: any, debugMode: boolean }) => {
   const videoRef = useRef<HTMLVideoElement>(null); const canvasRef = useRef<HTMLCanvasElement>(null);
   useEffect(() => {
@@ -69,7 +72,7 @@ const AIController = ({ onUpdate, debugMode }: { onUpdate: any, debugMode: boole
         });
         const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: { ideal: 640 }, height: { ideal: 480 } } });
         if (videoRef.current) { videoRef.current.srcObject = stream; videoRef.current.onloadeddata = () => predict(); }
-      } catch (e) { console.error(e); }
+      } catch (e) { console.error("Camera error:", e); }
     };
     const predict = () => {
       if (videoRef.current && handLandmarker) {
@@ -103,14 +106,14 @@ const AIController = ({ onUpdate, debugMode }: { onUpdate: any, debugMode: boole
   );
 };
 
-// --- 3. 针叶系统 (修改：爆炸时彻底消失) ---
+// --- 3. Foliage ---
 const Foliage = ({ active }: { active: boolean }) => {
   const shaderRef = useRef<THREE.ShaderMaterial>(null);
   const data = useMemo(() => {
     const count = CONFIG.counts.foliage; 
     const pos = new Float32Array(count*3), sz = new Float32Array(count);
     for(let i=0; i<count; i++) { 
-      const t = getFoliagePos(i, count); 
+      const t = getTreePos(i, count); 
       pos.set([t.x, t.y, t.z], i*3); 
       sz[i] = Math.random() * 0.2 + 0.1;
     }
@@ -127,10 +130,11 @@ const Foliage = ({ active }: { active: boolean }) => {
   return (
     <points>
       <bufferGeometry>
-        <bufferAttribute attach="attributes-position" count={data.pos.length/3} array={data.pos} itemSize={3} />
-        <bufferAttribute attach="attributes-aSize" count={data.sz.length} array={data.sz} itemSize={1} />
+        {/* 修复2: 使用 args={[array, itemSize]} 传递参数，这是 Strict 模式要求的写法 */}
+        <bufferAttribute attach="attributes-position" args={[data.pos, 3]} />
+        <bufferAttribute attach="attributes-aSize" args={[data.sz, 1]} />
       </bufferGeometry>
-      <shaderMaterial ref={shaderRef} transparent depthWrite={false} blending={THREE.NormalBlending}
+      <shaderMaterial ref={shaderRef} transparent={true} depthWrite={false} blending={THREE.NormalBlending}
         uniforms={{ 
             uTime: { value: 0 }, uProgress: { value: 1 }, 
             uColorA: { value: new THREE.Color(CONFIG.colors.green) }, 
@@ -140,18 +144,21 @@ const Foliage = ({ active }: { active: boolean }) => {
           uniform float uTime, uProgress; attribute float aSize; varying vec3 vPos;
           void main() { 
             vec3 p = position; 
-            if (uProgress > 0.8) { float wind = sin(uTime * 1.5 + p.x * 0.5 + p.y * 0.3) * 0.08; p.x += wind; }
+            if (uProgress > 0.8) { 
+                float wind = sin(uTime * 1.5 + p.x * 0.5 + p.y * 0.3) * 0.08;
+                p.x += wind; 
+            }
             vec4 mv = modelViewMatrix * vec4(p, 1.0); 
             gl_Position = projectionMatrix * mv; 
-            gl_PointSize = aSize * (450.0 / -mv.z) * uProgress; // 变小
+            float scale = smoothstep(0.0, 0.2, uProgress);
+            gl_PointSize = aSize * (450.0 / -mv.z) * scale; 
             vPos = p;
           }
         `}
         fragmentShader={`
           uniform float uProgress; uniform vec3 uColorA, uColorB; varying vec3 vPos;
           void main() { 
-            // 核心修改：一旦开始爆炸(uProgress < 0.1)，直接丢弃，不留痕迹
-            if (uProgress < 0.1) discard; 
+            if (uProgress < 0.01) discard;
             float d = distance(gl_PointCoord, vec2(0.5)); if(d > 0.5) discard; 
             float depth = smoothstep(5.0, -5.0, vPos.y) * 0.6 + 0.4;
             vec3 color = mix(uColorB, uColorA, depth);
@@ -163,11 +170,11 @@ const Foliage = ({ active }: { active: boolean }) => {
   );
 };
 
-// --- 4. 树顶五角星 ---
+// --- 4. Top Star ---
 const TopStar = ({ active }: { active: boolean }) => {
   const ref = useRef<THREE.Group>(null);
   const [target] = useState(() => new THREE.Vector3(0, CONFIG.tree.height / 2 + 0.6, 0));
-  const [chaos] = useState(() => new THREE.Vector3(0, 6, 15)); // 爆炸时悬浮上方
+  const [chaos] = useState(() => new THREE.Vector3(0, 8, 0));
 
   useLayoutEffect(() => { if (ref.current) ref.current.position.copy(target); }, [target]);
 
@@ -176,9 +183,7 @@ const TopStar = ({ active }: { active: boolean }) => {
     damp3(ref.current.position, active ? chaos : target, 0.3, d);
     ref.current.rotation.y += d * 0.5;
     if (active) ref.current.lookAt(state.camera.position);
-    
-    // 爆炸变大
-    const s = active ? 2.0 : 1;
+    const s = active ? 2.5 : 1;
     damp3(ref.current.scale, [s, s, s], 0.3, d);
   });
 
@@ -204,11 +209,10 @@ const TopStar = ({ active }: { active: boolean }) => {
   );
 };
 
-// --- 5. 通用饰品组件 (核心修改：放大 & 紧凑) ---
+// --- 5. Item Component ---
 const Item = ({ type, index, active, countOffset, imgUrl }: any) => {
   const ref = useRef<THREE.Group>(null);
   
-  // 1. 树上的位置
   const target = useMemo(() => {
     let offset = 0;
     if (type === 'gift') offset = 0.2;
@@ -217,16 +221,16 @@ const Item = ({ type, index, active, countOffset, imgUrl }: any) => {
     return getSurfacePos(index + countOffset, 500, offset);
   }, [index, countOffset, type]);
 
-  // 2. 爆炸位置：紧凑展示墙
-  const chaos = useMemo(() => getGalleryPos(), []); 
+  const chaos = useMemo(() => getRingPos(), []); 
 
-  // 3. 尺寸控制：[树上尺寸, 爆炸尺寸]
-  // 爆炸尺寸设得比较大，形成“贴脸”效果
+  // 修复3: 强制将 useTexture 返回值断言为 THREE.Texture，解决类型不匹配
+  const texture = useTexture(imgUrl || `https://picsum.photos/seed/${index+500}/200/200`) as THREE.Texture;
+
   const scales: [number, number] = useMemo(() => {
-      if (type === 'photo') return [0.8, 2.5]; // 照片超大
-      if (type === 'ball') return [0.15, 0.6]; // 球变大
-      if (type === 'gift') return [0.4, 1.0];  // 礼物变大
-      if (type === 'sock') return [0.3, 0.8];  // 袜子变大
+      if (type === 'photo') return [0.8, 2.0];
+      if (type === 'ball') return [0.15, 0.5];
+      if (type === 'gift') return [0.4, 0.8];
+      if (type === 'sock') return [0.3, 0.7];
       return [1, 1];
   }, [type]);
 
@@ -235,12 +239,10 @@ const Item = ({ type, index, active, countOffset, imgUrl }: any) => {
     const dest = active ? chaos : target;
     damp3(ref.current.position, dest, 0.3, d);
     
-    // 动态缩放
     const targetScale = active ? scales[1] : scales[0];
     damp3(ref.current.scale, [targetScale, targetScale, targetScale], 0.3, d);
 
     if (active) {
-       // 爆炸后：全部面向摄像机
        ref.current.lookAt(state.camera.position);
     } else {
        damp(ref.current.rotation, "y", Math.atan2(target.x, target.z), 0.4, d);
@@ -249,7 +251,6 @@ const Item = ({ type, index, active, countOffset, imgUrl }: any) => {
     }
   });
 
-  // 渲染部分保持不变
   if (type === 'ball') {
     const color = index % 2 === 0 ? CONFIG.colors.gold : CONFIG.colors.red;
     return (
@@ -275,25 +276,22 @@ const Item = ({ type, index, active, countOffset, imgUrl }: any) => {
       </group>
     );
   } else if (type === 'photo') {
-    const tex = useTexture(imgUrl || `https://picsum.photos/seed/${index+500}/200/200`) as THREE.Texture;
     return (
       <group ref={ref}>
         <mesh><boxGeometry args={[1.0, 1.2, 0.05]} /><meshStandardMaterial color="#FFF" /></mesh>
-        <mesh position={[0, 0.1, 0.06]}><planeGeometry args={[0.85, 0.85]} /><meshBasicMaterial map={tex} /></mesh>
+        <mesh position={[0, 0.1, 0.06]}><planeGeometry args={[0.85, 0.85]} /><meshBasicMaterial map={texture} /></mesh>
       </group>
     );
   }
   return null;
 };
 
-// --- 6. 场景 ---
+// --- 6. Scene ---
 const Scene = ({ active, gestureData, userImages }: { active: boolean, gestureData: any, userImages: string[] }) => {
   const { camera } = useThree();
   
   useFrame((_, d) => {
-    const radius = active ? CONFIG.camera.active[2] : CONFIG.camera.idle[2];
-    
-    // 手势控制
+    const radius = active ? CONFIG.camDist.active : CONFIG.camDist.idle;
     const theta = gestureData.x * Math.PI * 0.6; 
     const elevation = gestureData.y * 8 + 2; 
 
@@ -310,6 +308,7 @@ const Scene = ({ active, gestureData, userImages }: { active: boolean, gestureDa
       <ambientLight intensity={0.6} /> 
       <spotLight position={[10, 20, 10]} intensity={180} color="#FFD700" castShadow angle={0.5} penumbra={0.5} />
       <pointLight position={[-10, 5, -10]} intensity={60} color="#FFF" />
+      
       <Environment preset="night" blur={0.8} />
 
       <Foliage active={active} />
@@ -329,7 +328,8 @@ const Scene = ({ active, gestureData, userImages }: { active: boolean, gestureDa
         <Item key={`pol-${i}`} type="photo" index={i} countOffset={600} active={active} imgUrl={userImages[i % userImages.length]} />
       ))}
 
-      <EffectComposer disableNormalPass>
+      {/* 修复4: 移除了 EffectComposer 上不存在的属性 disableNormalPass */}
+      <EffectComposer>
         <Bloom luminanceThreshold={0.7} intensity={0.8} radius={0.5} mipmapBlur />
         <Vignette eskil={false} offset={0.1} darkness={1.0} />
       </EffectComposer>
@@ -337,7 +337,7 @@ const Scene = ({ active, gestureData, userImages }: { active: boolean, gestureDa
   );
 };
 
-// --- 7. 入口 ---
+// --- 7. Entry ---
 export default function App() {
   const [gesture, setGesture] = useState({ isOpen: false, x: 0, y: 0, dist: "0" });
   const [debug, setDebug] = useState(false);
